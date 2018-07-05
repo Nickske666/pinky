@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE TupleSections #-}
 
 module Pinky.HyperOpt.Train where
 
@@ -26,17 +27,18 @@ import Control.Monad.Trans.Reader
 import Data.Singletons.Prelude (Head, Last)
 
 runHyperParam ::
-       forall (layers :: [*]) shapes i o.
+       forall (layers :: [*]) shapes i o m.
        ( i ~ Head shapes
        , o ~ Last shapes
        , SingI o
        , CreateRandom (Network layers shapes)
+       , MonadRandom m
        )
     => HyperParams
     -> SearchInfo i o
-    -> IO ClassificationAccuracy
+    -> m ClassificationAccuracy
 runHyperParam hp (SearchInfo errorFunc epochs trainData valData) = do
-    net <- createRandomM @IO @(Momentum (Network layers shapes))
+    net <- createRandomM @m @(Momentum (Network layers shapes))
     let Momentum trainedNet _ =
             flip runReader errorFunc $
             flip evalStateT hp $ trainNetwork net trainData epochs
@@ -85,23 +87,26 @@ genHP hp uhp = do
         Right r -> pure r
 
 localSearchHyperOptIter ::
-       forall (layers :: [*]) shapes i o.
+       forall (layers :: [*]) shapes i o m.
        ( i ~ Head shapes
        , o ~ Last shapes
        , SingI o
        , CreateRandom (Network layers shapes)
+       , MonadRandom m
        )
-    => (HyperParams, ClassificationAccuracy)
+    => HyperParams
     -> SearchInfo i o
-    -> IO (HyperParams, ClassificationAccuracy)
-localSearchHyperOptIter hp (SearchInfo errorfunc epochs trainSet valSet) =
-    undefined
+    -> UpdateHyperParams
+    -> m (HyperParams, ClassificationAccuracy)
+localSearchHyperOptIter hp si uhp = do
+    hp' <- genHP hp uhp
+    (hp', ) <$> runHyperParam @layers @shapes hp' si
 
 data SearchInfo (i :: Shape) (o :: Shape) = SearchInfo
-    { rsErrorFunc :: ErrorFunc o
-    , rsEpochs :: Natural
-    , rsTrainSet :: DataSet i o
-    , rsValSet :: DataSet i o
+    { sErrorFunc :: ErrorFunc o
+    , sEpochs :: Natural
+    , sTrainSet :: DataSet i o
+    , sValSet :: DataSet i o
     } deriving (Generic)
 
 data LocalSearchArgs (i :: Shape) (o :: Shape) = LocalSearchArgs
@@ -122,18 +127,19 @@ localSearchHyperOpt ::
     -> Natural -- ^ maximal number of hyperparameter sets tested
     -> LocalSearchArgs i o
     -> IO (HyperParams, ClassificationAccuracy)
-localSearchHyperOpt init maxIter rsa@(LocalSearchArgs rsi@(SearchInfo errorFunc epochs trainSet valSet) minAcc uhp@(UpdateHyperParams x y z) uhpDecay@(UpdateHyperParams xDecay yDecay zDecay)) =
+localSearchHyperOpt init maxIter rsa@(LocalSearchArgs si minAcc uhp uhpDecay) =
     ifThenElse (snd init > minAcc) (pure init) $
     case minusNaturalMaybe maxIter 1 of
-        Nothing -> localSearchHyperOptIter @layers @shapes init rsi
+        Nothing -> pure init
         Just iterLeft -> do
-            result <- localSearchHyperOptIter @layers @shapes init rsi
+            result <- localSearchHyperOptIter @layers @shapes (fst init) si uhp
             if result == init
                 then localSearchHyperOpt @layers @shapes init iterLeft rsa
                 else localSearchHyperOpt @layers @shapes init iterLeft newRsa
   where
-    uhpNew = UpdateHyperParams (x / xDecay) (y / yDecay) $ z `div` zDecay
-    newRsa = rsa {rsaUhp = uhpNew}
+    uhpNew (UpdateHyperParams x y z) (UpdateHyperParams xDecay yDecay zDecay) =
+        UpdateHyperParams (x / xDecay) (y / yDecay) $ z `div` zDecay
+    newRsa = rsa {rsaUhp = uhpNew uhp uhpDecay}
 
 ifThenElse :: Bool -> a -> a -> a
 ifThenElse True a _ = a
