@@ -198,6 +198,7 @@ crossEntropyError' outpt label = prefactor <#> (outpt <-> label)
   where
     prefactor = 1 / ((konstS 1 <-> outpt) <#> outpt)
 
+-- Isn't actually used in practice
 expError' ::
        (Prod (S o) (S o) Double, Prod Double (S o) (S o), SingI o)
     => Double
